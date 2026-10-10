@@ -12,6 +12,9 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <string>
 #include <sstream>
 
 using namespace geode::prelude;
@@ -33,6 +36,7 @@ namespace hk {
     inline int hits = 0;
     inline long long hitFrame = -1000;
     inline bool acHeld = false;
+    inline bool loaded = false;
 
     GJBaseGameLayer* base() {
         return static_cast<GJBaseGameLayer*>(PlayLayer::get());
@@ -457,8 +461,6 @@ class $modify(HkPauseLayer, PauseLayer) {
 
 // ---------------------------------------------------------------- gameplay hooks
 class $modify(HkPlayLayer, PlayLayer) {
-    struct Fields { CCLabelBMFont* info = nullptr; };
-
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
         if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
         hk::loadSettings();
@@ -491,21 +493,16 @@ class $modify(HkPlayLayer, PlayLayer) {
         info->setOpacity(190);
         info->setVisible(false);
         this->addChild(info, 1000);
-        m_fields->info = info;
         return true;
     }
 
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
-        auto info = m_fields->info;
+        auto info = typeinfo_cast<CCLabelBMFont*>(this->getChildByID("rebornhack-info"_spr));
         if (!info) return;
         info->setVisible(hk::info);
         if (!hk::info) return;
         std::string t = fmt::format("Frame {}   Hits {}", m_gameState.m_currentProgress, hk::hits);
         if (hk::mode == hk::Mode::Play) t += fmt::format("   Macro {}/{}", hk::cursor, hk::macro.size());
         info->setString(t.c_str());
-    }
-
-    void resetLevel() {
-        PlayLayer::resetLevel();
- 
+}
