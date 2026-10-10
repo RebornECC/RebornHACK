@@ -1,10 +1,15 @@
-// RebornHack - pause-menu hack panel: noclip, speedhack, macro recorder / replayer.
+// RebornHack - pause-menu hack panel: noclip, jump hack, autoclicker, speedhack, FPS, hitboxes,
+// unlock icons, info overlay, macro recorder / replayer (3 slots per level).
 // Safe mode is ALWAYS on: if any cheat or a macro was used in a run, finishing the level is not saved
 // as a real completion (it is turned into a practice-style run).
 #include <Geode/Geode.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/PauseLayer.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
+#include <Geode/modify/PlayerObject.hpp>
+#include <Geode/modify/GameManager.hpp>
+#include <functional>
+#include <vector>
 #include <algorithm>
 #include <cmath>
 #include <sstream>
@@ -23,6 +28,11 @@ namespace hk {
     inline size_t cursor = 0;
     inline bool injecting = false;
     inline std::string levelKey;
+    inline bool jump = false, autoclick = false, hitbox = false, unlock = false, info = false;
+    inline int fps = 60, slot = 1;
+    inline int hits = 0;
+    inline long long hitFrame = -1000;
+    inline bool acHeld = false;
 
     GJBaseGameLayer* base() {
         return static_cast<GJBaseGameLayer*>(PlayLayer::get());
@@ -35,11 +45,37 @@ namespace hk {
     void loadSettings() {
         noclip = Mod::get()->getSavedValue<bool>("noclip", false);
         speed = std::clamp((float)Mod::get()->getSavedValue<double>("speed", 1.0), 0.1f, 5.f);
+        jump = Mod::get()->getSavedValue<bool>("jump", false);
+        autoclick = Mod::get()->getSavedValue<bool>("autoclick", false);
+        hitbox = Mod::get()->getSavedValue<bool>("hitbox", false);
+        unlock = Mod::get()->getSavedValue<bool>("unlock", false);
+        info = Mod::get()->getSavedValue<bool>("info", false);
+        fps = std::clamp((int)Mod::get()->getSavedValue<int64_t>("fps", 60), 30, 1000);
+        slot = std::clamp((int)Mod::get()->getSavedValue<int64_t>("slot", 1), 1, 3);
     }
 
     void saveSettings() {
         Mod::get()->setSavedValue<bool>("noclip", noclip);
         Mod::get()->setSavedValue<double>("speed", (double)speed);
+        Mod::get()->setSavedValue<bool>("jump", jump);
+        Mod::get()->setSavedValue<bool>("autoclick", autoclick);
+        Mod::get()->setSavedValue<bool>("hitbox", hitbox);
+        Mod::get()->setSavedValue<bool>("unlock", unlock);
+        Mod::get()->setSavedValue<bool>("info", info);
+        Mod::get()->setSavedValue<int64_t>("fps", (int64_t)fps);
+        Mod::get()->setSavedValue<int64_t>("slot", (int64_t)slot);
+    }
+
+    void applyFps() {
+        CCDirector::get()->setAnimationInterval(1.0 / (double)std::max(fps, 30));
+    }
+
+    void applyHitbox() {
+        GameManager::get()->setGameVariable("0166", hitbox);
+    }
+
+    std::string macroKey() {
+        return slot <= 1 ? "macro_" + levelKey : fmt::format("macro_{}_s{}", levelKey, slot);
     }
 
     std::string serialize() {
@@ -59,11 +95,11 @@ namespace hk {
     }
 
     void saveMacro() {
-        if (!levelKey.empty()) Mod::get()->setSavedValue<std::string>("macro_" + levelKey, serialize());
+        if (!levelKey.empty()) Mod::get()->setSavedValue<std::string>(macroKey(), serialize());
     }
 
     void loadMacro() {
-        if (!levelKey.empty()) deserialize(Mod::get()->getSavedValue<std::string>("macro_" + levelKey, ""));
+        if (!levelKey.empty()) deserialize(Mod::get()->getSavedValue<std::string>(macroKey(), ""));
     }
 
     char const* modeName() {
@@ -93,25 +129,42 @@ public:
     ~HackPopup() override { s_open--; }
 
 protected:
-    ButtonSprite* m_noclipSpr = nullptr;
+    struct Tog { CCMenuItemToggler* t; bool* flag; };
+    std::vector<Tog> m_togs;
+    std::vector<CCNode*> m_pages;
+    std::vector<ButtonSprite*> m_tabs;
+    int m_page = 0;
     ButtonSprite* m_recSpr = nullptr;
     ButtonSprite* m_playSpr = nullptr;
     CCLabelBMFont* m_speedLabel = nullptr;
+    CCLabelBMFont* m_fpsLabel = nullptr;
+    CCLabelBMFont* m_statusLabel = nullptr;
     CCLabelBMFont* m_macroLabel = nullptr;
+    CCLabelBMFont* m_slotLabel = nullptr;
 
     void refresh() {
-        m_noclipSpr->setString(hk::noclip ? "Noclip  ON" : "Noclip  OFF");
+        for (auto& t : m_togs) t.t->toggle(*t.flag);
+        for (size_t i = 0; i < m_tabs.size(); i++) {
+            m_tabs[i]->updateBGImage((int)i == m_page ? "GJ_button_01.png" : "GJ_button_04.png");
+        }
+        for (size_t i = 0; i < m_pages.size(); i++) m_pages[i]->setVisible((int)i == m_page);
         m_speedLabel->setString(fmt::format("{:.2f}x", hk::speed).c_str());
+        m_fpsLabel->setString(fmt::format("{}", hk::fps).c_str());
+        m_slotLabel->setString(fmt::format("{}", hk::slot).c_str());
         m_recSpr->setString(hk::mode == hk::Mode::Record ? "Stop" : "Record");
         m_playSpr->setString(hk::mode == hk::Mode::Play ? "Stop" : "Play");
-        m_macroLabel->setString(fmt::format("Macro: {} inputs", hk::macro.size()).c_str());
+        m_statusLabel->setString(hk::mode == hk::Mode::Record ? "REC" : hk::mode == hk::Mode::Play ? "PLAY" : "Idle");
+        m_statusLabel->setColor(hk::mode == hk::Mode::Record ? ccColor3B{255, 100, 100}
+                              : hk::mode == hk::Mode::Play ? ccColor3B{110, 230, 150} : ccColor3B{255, 255, 255});
+        m_macroLabel->setString(fmt::format("Slot {} - {} inputs", hk::slot, hk::macro.size()).c_str());
     }
 
-    CCLabelBMFont* section(char const* text, float y, float width) {
-        auto l = CCLabelBMFont::create(text, "goldFont.fnt");
-        l->setScale(.5f);
-        l->setPosition({width / 2, y});
-        m_mainLayer->addChild(l);
+    CCLabelBMFont* label(CCNode* parent, char const* text, char const* font, float scale, CCPoint pos, CCPoint anchor = {.5f, .5f}) {
+        auto l = CCLabelBMFont::create(text, font);
+        l->setScale(scale);
+        l->setAnchorPoint(anchor);
+        l->setPosition(pos);
+        parent->addChild(l);
         return l;
     }
 
@@ -119,112 +172,189 @@ protected:
         return ButtonSprite::create(text, "bigFont.fnt", tex, .7f);
     }
 
+    CCMenuItemSpriteExtra* addBtn(CCMenu* menu, ButtonSprite* spr, float scale, float x, float y, std::function<void()> fn) {
+        auto btn = CCMenuItemExt::createSpriteExtra(spr, [fn](auto) { fn(); });
+        btn->setScale(scale);
+        btn->setPosition({x, y});
+        menu->addChild(btn);
+        return btn;
+    }
+
+    // checkbox row: [x] Name / small description
+    void addRow(CCNode* page, CCMenu* menu, char const* name, char const* desc, bool* flag, float y, std::function<void()> after = nullptr) {
+        auto tog = CCMenuItemExt::createTogglerWithStandardSprites(.6f, [this, flag, after](CCMenuItemToggler* t) {
+            *flag = !t->isToggled(); // the callback runs before the toggler flips itself
+            hk::saveSettings();
+            if (after) after();
+        });
+        tog->setPosition({38.f, y});
+        menu->addChild(tog);
+        m_togs.push_back({tog, flag});
+        label(page, name, "bigFont.fnt", .4f, {62.f, y + 7.f}, {0.f, .5f});
+        auto d = label(page, desc, "chatFont.fnt", .5f, {62.f, y - 8.f}, {0.f, .5f});
+        d->setColor({150, 158, 178});
+    }
+
+    // "<  value  >" stepper
+    void addStepper(CCNode* page, CCMenu* menu, char const* name, char const* desc, float y, CCLabelBMFont*& valueLabel,
+                    std::function<void()> prev, std::function<void()> next) {
+        float w = m_mainLayer->getContentSize().width;
+        label(page, name, "bigFont.fnt", .4f, {38.f, y + 7.f}, {0.f, .5f});
+        auto d = label(page, desc, "chatFont.fnt", .5f, {38.f, y - 8.f}, {0.f, .5f});
+        d->setColor({150, 158, 178});
+        addBtn(menu, makeBtn("<", "GJ_button_04.png"), .55f, w - 110.f, y, prev);
+        valueLabel = label(page, "", "bigFont.fnt", .5f, {w - 78.f, y});
+        addBtn(menu, makeBtn(">", "GJ_button_04.png"), .55f, w - 46.f, y, next);
+    }
+
+    CCNode* newPage(CCMenu*& menu) {
+        auto page = CCNode::create();
+        menu = CCMenu::create();
+        menu->setPosition({0, 0});
+        page->addChild(menu, 10);
+        m_mainLayer->addChild(page);
+        m_pages.push_back(page);
+        return page;
+    }
+
+    void stopMacroMode() {
+        if (hk::mode == hk::Mode::Record) hk::saveMacro();
+        hk::mode = hk::Mode::Idle;
+        hk::updateIndicator();
+    }
+
+    void setSpeed(float v) {
+        hk::speed = std::clamp(std::round(v * 100.f) / 100.f, 0.1f, 5.f);
+        hk::saveSettings();
+        hk::applySpeed();
+        this->refresh();
+    }
+
     bool init() {
         bool dark = Mod::get()->getSettingValue<bool>("dark-theme");
-        if (!Popup::init(340.f, 270.f, dark ? "GJ_square05.png" : "GJ_square01.png")) return false;
+        if (!Popup::init(360.f, 280.f, dark ? "GJ_square05.png" : "GJ_square01.png")) return false;
         this->setTitle("RebornHack");
         hk::loadSettings();
         auto size = m_mainLayer->getContentSize();
-        auto menu = CCMenu::create();
-        menu->setPosition({0, 0});
-        m_mainLayer->addChild(menu);
+        float w = size.width, h = size.height, cx = w / 2;
 
-        // --- cheats
-        section("CHEATS", size.height - 52.f, size.width);
-        m_noclipSpr = makeBtn("Noclip  OFF", "GJ_button_01.png");
-        auto noclipBtn = CCMenuItemExt::createSpriteExtra(m_noclipSpr, [this](auto) {
-            hk::noclip = !hk::noclip;
-            hk::saveSettings();
-            this->refresh();
-        });
-        noclipBtn->setScale(.8f);
-        noclipBtn->setPosition({size.width / 2, size.height - 80.f});
-        menu->addChild(noclipBtn);
+        // ---- tabs
+        auto tabMenu = CCMenu::create();
+        tabMenu->setPosition({0, 0});
+        m_mainLayer->addChild(tabMenu, 20);
+        char const* names[] = {"Cheats", "Speed", "Macro", "Visual"};
+        for (int i = 0; i < 4; i++) {
+            auto spr = makeBtn(names[i], "GJ_button_04.png");
+            m_tabs.push_back(spr);
+            addBtn(tabMenu, spr, .5f, cx - 123.f + i * 82.f, h - 48.f, [this, i] {
+                m_page = i;
+                this->refresh();
+            });
+        }
 
-        // --- speed
-        section("SPEED", size.height - 115.f, size.width);
-        m_speedLabel = CCLabelBMFont::create("1.00x", "bigFont.fnt");
-        m_speedLabel->setScale(.6f);
-        m_speedLabel->setPosition({size.width / 2, size.height - 142.f});
-        m_mainLayer->addChild(m_speedLabel);
-        auto stepSpeed = [this](float d) {
-            hk::speed = std::clamp(std::round((hk::speed + d) * 100.f) / 100.f, 0.1f, 5.f);
-            hk::saveSettings();
-            hk::applySpeed();
-            this->refresh();
-        };
-        auto minus = CCMenuItemExt::createSpriteExtra(makeBtn("-", "GJ_button_06.png"), [stepSpeed](auto) { stepSpeed(-0.1f); });
-        minus->setScale(.75f);
-        minus->setPosition({size.width / 2 - 85.f, size.height - 142.f});
-        menu->addChild(minus);
-        auto plus = CCMenuItemExt::createSpriteExtra(makeBtn("+", "GJ_button_02.png"), [stepSpeed](auto) { stepSpeed(0.1f); });
-        plus->setScale(.75f);
-        plus->setPosition({size.width / 2 + 85.f, size.height - 142.f});
-        menu->addChild(plus);
-        auto one = CCMenuItemExt::createSpriteExtra(makeBtn("1x", "GJ_button_04.png"), [this](auto) {
+        // ---- page 1: cheats
+        CCMenu* m1;
+        auto p1 = newPage(m1);
+        addRow(p1, m1, "Noclip", "No deaths from hazards", &hk::noclip, h - 92.f);
+        addRow(p1, m1, "Jump hack", "Jump at any moment", &hk::jump, h - 126.f);
+        addRow(p1, m1, "Autoclicker", "About 10 clicks per second", &hk::autoclick, h - 160.f, [] { hk::acHeld = false; });
+        addRow(p1, m1, "Unlock icons", "All icons and colors, local only", &hk::unlock, h - 194.f);
+        addBtn(m1, makeBtn("Reset all", "GJ_button_06.png"), .5f, w - 70.f, 52.f, [this] {
+            hk::noclip = hk::jump = hk::autoclick = hk::hitbox = hk::info = false;
             hk::speed = 1.f;
+            hk::fps = 60;
+            hk::acHeld = false;
             hk::saveSettings();
             hk::applySpeed();
+            hk::applyFps();
+            hk::applyHitbox();
             this->refresh();
         });
-        one->setScale(.6f);
-        one->setPosition({size.width / 2 + 125.f, size.height - 142.f});
-        menu->addChild(one);
 
-        // --- macro
-        section("MACRO", size.height - 180.f, size.width);
-        m_macroLabel = CCLabelBMFont::create("Macro: 0 inputs", "chatFont.fnt");
-        m_macroLabel->setScale(.6f);
-        m_macroLabel->setPosition({size.width / 2, size.height - 200.f});
-        m_mainLayer->addChild(m_macroLabel);
+        // ---- page 2: speed
+        CCMenu* m2;
+        auto p2 = newPage(m2);
+        m_speedLabel = label(p2, "1.00x", "bigFont.fnt", .9f, {cx, h - 100.f});
+        label(p2, "Game speed", "chatFont.fnt", .55f, {cx, h - 124.f})->setColor({150, 158, 178});
+        addBtn(m2, makeBtn("-", "GJ_button_06.png"), .55f, cx - 120.f, h - 154.f, [this] { setSpeed(hk::speed - 0.1f); });
+        addBtn(m2, makeBtn("+", "GJ_button_02.png"), .55f, cx - 60.f, h - 154.f, [this] { setSpeed(hk::speed + 0.1f); });
+        addBtn(m2, makeBtn("0.5x", "GJ_button_04.png"), .5f, cx, h - 154.f, [this] { setSpeed(0.5f); });
+        addBtn(m2, makeBtn("1x", "GJ_button_04.png"), .5f, cx + 60.f, h - 154.f, [this] { setSpeed(1.f); });
+        addBtn(m2, makeBtn("2x", "GJ_button_04.png"), .5f, cx + 120.f, h - 154.f, [this] { setSpeed(2.f); });
+        addStepper(p2, m2, "FPS", "Frame rate cap", h - 202.f, m_fpsLabel,
+            [this] { stepFps(-1); }, [this] { stepFps(1); });
 
+        // ---- page 3: macro
+        CCMenu* m3;
+        auto p3 = newPage(m3);
+        m_statusLabel = label(p3, "Idle", "bigFont.fnt", .6f, {cx, h - 98.f});
+        m_macroLabel = label(p3, "", "chatFont.fnt", .55f, {cx, h - 120.f});
+        m_macroLabel->setColor({150, 158, 178});
         m_recSpr = makeBtn("Record", "GJ_button_06.png");
-        auto rec = CCMenuItemExt::createSpriteExtra(m_recSpr, [this](auto) {
+        addBtn(m3, m_recSpr, .6f, cx - 100.f, h - 154.f, [this] {
             if (hk::mode == hk::Mode::Record) {
-                hk::mode = hk::Mode::Idle;
-                hk::saveMacro();
+                stopMacroMode();
             } else {
                 hk::macro.clear();
                 hk::mode = hk::Mode::Record;
                 hk::cursor = 0;
+                hk::updateIndicator();
             }
-            hk::updateIndicator();
             this->refresh();
         });
-        rec->setScale(.7f);
-        rec->setPosition({size.width / 2 - 100.f, 38.f});
-        menu->addChild(rec);
-
         m_playSpr = makeBtn("Play", "GJ_button_01.png");
-        auto play = CCMenuItemExt::createSpriteExtra(m_playSpr, [this](auto) {
+        addBtn(m3, m_playSpr, .6f, cx, h - 154.f, [this] {
             if (hk::mode == hk::Mode::Play) {
-                hk::mode = hk::Mode::Idle;
+                stopMacroMode();
             } else if (hk::macro.empty()) {
-                Notification::create("No macro recorded for this level", NotificationIcon::Warning)->show();
+                Notification::create("No macro in this slot", NotificationIcon::Warning)->show();
             } else {
                 hk::mode = hk::Mode::Play;
                 hk::cursor = 0;
                 hk::cheated = true;
+                hk::updateIndicator();
                 Notification::create("Restart the attempt to play the macro", NotificationIcon::Info)->show();
             }
-            hk::updateIndicator();
             this->refresh();
         });
-        play->setScale(.7f);
-        play->setPosition({size.width / 2, 38.f});
-        menu->addChild(play);
-
-        auto clear = CCMenuItemExt::createSpriteExtra(makeBtn("Clear", "GJ_button_04.png"), [this](auto) {
+        addBtn(m3, makeBtn("Clear", "GJ_button_04.png"), .6f, cx + 100.f, h - 154.f, [this] {
             hk::macro.clear();
             hk::saveMacro();
             this->refresh();
         });
-        clear->setScale(.7f);
-        clear->setPosition({size.width / 2 + 100.f, 38.f});
-        menu->addChild(clear);
+        addStepper(p3, m3, "Slot", "3 macros per level", h - 202.f, m_slotLabel,
+            [this] { stepSlot(2); }, [this] { stepSlot(1); });
+
+        // ---- page 4: visual
+        CCMenu* m4;
+        auto p4 = newPage(m4);
+        addRow(p4, m4, "Hitboxes", "Show hitboxes after restart", &hk::hitbox, h - 92.f, [] { hk::applyHitbox(); });
+        addRow(p4, m4, "Info overlay", "Frame, hits, macro progress", &hk::info, h - 126.f);
+
+        // ---- footer
+        label(m_mainLayer, "Safe mode on: cheated runs are never saved as real", "chatFont.fnt", .5f, {cx, 20.f})
+            ->setColor({127, 217, 160});
 
         this->refresh();
         return true;
+    }
+
+    void stepFps(int d) {
+        static int const opts[] = {60, 120, 240, 360};
+        int idx = 0;
+        for (int i = 0; i < 4; i++) if (hk::fps == opts[i]) idx = i;
+        hk::fps = opts[(idx + d + 4) % 4];
+        hk::saveSettings();
+        hk::applyFps();
+        this->refresh();
+    }
+
+    void stepSlot(int d) {
+        stopMacroMode();
+        hk::slot = (hk::slot - 1 + d) % 3 + 1;
+        hk::saveSettings();
+        hk::loadMacro();
+        this->refresh();
     }
 
 public:
@@ -327,83 +457,55 @@ class $modify(HkPauseLayer, PauseLayer) {
 
 // ---------------------------------------------------------------- gameplay hooks
 class $modify(HkPlayLayer, PlayLayer) {
+    struct Fields { CCLabelBMFont* info = nullptr; };
+
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
         if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
         hk::loadSettings();
         hk::cheated = false;
         hk::mode = hk::Mode::Idle;
         hk::cursor = 0;
+        hk::hits = 0;
+        hk::hitFrame = -1000;
+        hk::acHeld = false;
         hk::levelKey = fmt::format("{}_{}", level->m_levelID.value(), std::string(level->m_levelName));
         hk::loadMacro();
         hk::applySpeed();
+        hk::applyFps();
+        hk::applyHitbox();
 
+        auto win = CCDirector::get()->getWinSize();
         auto label = CCLabelBMFont::create("", "bigFont.fnt");
         label->setID("rebornhack-status"_spr);
         label->setScale(.45f);
         label->setAnchorPoint({0.f, 1.f});
-        auto win = CCDirector::get()->getWinSize();
         label->setPosition({12.f, win.height - 10.f});
         label->setVisible(false);
         this->addChild(label, 1000);
+
+        auto info = CCLabelBMFont::create("", "chatFont.fnt");
+        info->setID("rebornhack-info"_spr);
+        info->setScale(.6f);
+        info->setAnchorPoint({0.f, 0.f});
+        info->setPosition({12.f, 8.f});
+        info->setOpacity(190);
+        info->setVisible(false);
+        this->addChild(info, 1000);
+        m_fields->info = info;
         return true;
+    }
+
+    void postUpdate(float dt) {
+        PlayLayer::postUpdate(dt);
+        auto info = m_fields->info;
+        if (!info) return;
+        info->setVisible(hk::info);
+        if (!hk::info) return;
+        std::string t = fmt::format("Frame {}   Hits {}", m_gameState.m_currentProgress, hk::hits);
+        if (hk::mode == hk::Mode::Play) t += fmt::format("   Macro {}/{}", hk::cursor, hk::macro.size());
+        info->setString(t.c_str());
     }
 
     void resetLevel() {
         PlayLayer::resetLevel();
-        hk::cursor = 0;
-        if (hk::mode == hk::Mode::Record) hk::macro.clear(); // each attempt is recorded from the start
-        hk::updateIndicator();
-    }
-
-    void destroyPlayer(PlayerObject* player, GameObject* object) {
-        if (hk::noclip && object != m_anticheatSpike) {
-            hk::cheated = true;
-            return;
-        }
-        PlayLayer::destroyPlayer(player, object);
-    }
-
-    void levelComplete() {
-        if (hk::mode == hk::Mode::Record) {
-            hk::mode = hk::Mode::Idle;
-            hk::saveMacro();
-            hk::updateIndicator();
-        }
-        if (hk::cheated || hk::noclip || hk::mode == hk::Mode::Play || std::abs(hk::speed - 1.f) > 0.001f) {
-            m_isPracticeMode = true; // safe mode: never a real completion
-            Notification::create("Safe mode: cheats used, completion not saved", NotificationIcon::Warning)->show();
-        }
-        PlayLayer::levelComplete();
-    }
-
-    void onQuit() {
-        hk::mode = hk::Mode::Idle;
-        CCDirector::get()->getScheduler()->setTimeScale(1.f);
-        PlayLayer::onQuit();
-    }
-};
-
-class $modify(HkBase, GJBaseGameLayer) {
-    void handleButton(bool down, int button, bool isPlayer1) {
-        if (hk::base() == this) {
-            if (hk::mode == hk::Mode::Play && !hk::injecting) return; // ignore real input while a macro plays
-            if (hk::mode == hk::Mode::Record && !hk::injecting) {
-                hk::macro.push_back({m_gameState.m_currentProgress, down, button, isPlayer1});
-            }
-        }
-        GJBaseGameLayer::handleButton(down, button, isPlayer1);
-    }
-
-    void processCommands(float dt, bool isHalfTick, bool isLastTick) {
-        if (hk::base() == this && hk::mode == hk::Mode::Play) {
-            unsigned frame = m_gameState.m_currentProgress;
-            while (hk::cursor < hk::macro.size() && hk::macro[hk::cursor].frame <= frame) {
-                auto const& e = hk::macro[hk::cursor++];
-                hk::injecting = true;
-                this->handleButton(e.down, e.button, e.p1);
-                hk::injecting = false;
-            }
-        }
-        GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
-    }
-};
+ 
