@@ -8,9 +8,9 @@
  },
  "id": "rebornecc.rebornhack",
  "name": "RebornHack",
- "version": "v0.1.0",
+ "version": "v0.3.0",
  "developer": "RebornECC",
- "description": "Pause-menu hack panel: noclip, speedhack and a macro recorder/replayer. Safe mode is always on: a run that used cheats or a macro can never be saved as a real completion.",
+ "description": "Pause-menu hack panel: noclip, jump hack, autoclicker, speedhack, FPS, hitboxes, unlock icons, info overlay and a macro recorder/replayer with 3 slots per level. Safe mode is always on: a run that used cheats or a macro can never be saved as a real completion.",
  "settings": {
   "dark-theme": {
    "type": "bool",
